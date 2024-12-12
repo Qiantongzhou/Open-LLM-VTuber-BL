@@ -19,6 +19,27 @@
             "surprise": 3
         }
     },
+        {
+        "name": "tuzi",
+        "description": "tutuai",
+        "url": "live2d-models/兔喽/兔喽.model3.json",
+        "kScale": 0.000625,
+        "initialXshift": 0,
+        "initialYshift": 1500,
+        "kXOffset": 1500,
+        "kYOffset": -150,
+        "idleMotionGroupName": "Idle",
+        "emotionMap": {
+            "neutral": 0,
+            "anger": 2,
+            "disgust": 2,
+            "fear": 1,
+            "joy": 3,
+            "smirk": 3,
+            "sadness": 1,
+            "surprise": 3
+        }
+    },
     {
         "name": "shizuku",
         "description": "Orange-Haired Girl. Will fetch from CDN.",

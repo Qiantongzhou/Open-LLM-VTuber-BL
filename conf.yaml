@@ -91,7 +91,7 @@ memgpt:
 # ============== Live2D front-end Settings ==============
 
 LIVE2D: False # Deprecated and useless now. Do not enable it. Bad things will happen.
-LIVE2D_MODEL: "shizuku-local"
+LIVE2D_MODEL: "tuzi"
 
 #  ============== Voice Interaction Settings ==============
 
@@ -152,7 +152,7 @@ GroqWhisperASR:
 
 # ============== Text to Speech ==============
 TTS_ON: True
-TTS_MODEL: "edgeTTS"
+TTS_MODEL: "GPT_Sovits"
 # text to speech model options: 
 #   "AzureTTS", "pyttsx3TTS", "edgeTTS", "barkTTS", 
 #   "cosyvoiceTTS", "meloTTS", "piperTTS", "coquiTTS",
@@ -175,7 +175,7 @@ barkTTS:
 edgeTTS:
   # Check out doc at https://github.com/rany2/edge-tts
   # Use `edge-tts --list-voices` to list all available voices
-  voice: "en-US-AvaMultilingualNeural" #"zh-CN-XiaoxiaoNeural" # "ja-JP-NanamiNeural"
+  voice: "zh-CN-XiaoxiaoNeural"#"en-US-AvaMultilingualNeural" #"zh-CN-XiaoxiaoNeural" # "ja-JP-NanamiNeural"
 
 # pyttsx3 doesn't have any config.
 
@@ -208,16 +208,15 @@ xTTS:
 
 GPT_Sovits:
   # put ref audio to root path of GPT-Sovits, or set the path here
-  api_url: "http://127.0.0.1:9880/tts"
-  text_lang: "zh"
-  ref_audio_path: "人类，我闻到了你身上散发出来的欧气。.wav"
-  prompt_lang: "zh"
-  prompt_text: "人类，我闻到了你身上散发出来的欧气。"
-  text_split_method: "cut5"
-  batch_size: "1"
-  media_type: "wav"
-  streaming_mode: "false"
-
+  api_url: "http://localhost:9880/"
+  text_lang: "中文"
+  ref_audio_path: "output/slicer_opt/11111录zhiTutu.mp3_0003242880_0003413760.wav"
+  prompt_lang: "中文"
+  prompt_text: "欢迎宿梦哥哥，晚上好... 这个好好玩啊,呵呵"
+  #"output/denoise_opt/11111录zhiTutu.mp3_0000054720_0000195520.wav"
+  #"然后这样子这样子我就可以那个什么了"
+#"output/slicer_opt/11111录zhiTutu.mp3_0003242880_0003413760.wav"
+#“欢迎宿梦哥哥，晚上好... 这个好好玩啊,呵呵”
 fishAPITTS:
   # The API key for the Fish TTS API.
   api_key: ""
@@ -277,7 +276,7 @@ MEMORY_SNAPSHOT: True
 # All persona files are stored as txt in 'prompts/persona' directory. 
 # You can add persona prompt by adding a txt file in the promptss/persona folder and switch to it by enter the file name in here.
 # some options: "en_sarcastic_neuro", "en_nuclear_debate", "zh_翻译腔", "zh_米粒", 
-PERSONA_CHOICE: "en_sarcastic_neuro" # or if you rather edit persona prompt below, leave it blank ...
+PERSONA_CHOICE: "tuzi" # or if you rather edit persona prompt below, leave it blank ...
 
 # This prompt will be used instead if the PERSONA_CHOICE is empty
 DEFAULT_PERSONA_PROMPT_IN_YAML: |
