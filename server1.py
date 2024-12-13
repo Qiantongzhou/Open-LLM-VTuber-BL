@@ -4,6 +4,7 @@ import shutil
 import atexit
 import json
 import asyncio
+import time
 from typing import List, Dict, Any
 import yaml
 import numpy as np
@@ -12,38 +13,42 @@ from loguru import logger
 from fastapi import FastAPI, WebSocket, APIRouter
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
+import uvicorn
+
+# Bilibili imports
+# -*- coding: utf-8 -*-
+import asyncio
+import http.cookies
+import random
+from typing import *
+
+import aiohttp
+
+import blivedm
+import blivedm.models.web as web_models
+
 from main import OpenLLMVTuberMain
 from live2d_model import Live2dModel
 from tts.stream_audio import AudioPayloadPreparer
 import __init__
 
+TEST_ROOM_IDS = [30015166]  # Replace with your desired Bilibili room IDs
+#tuzi 30015166
+#donggua 5624404
+SESSDATA = '08c12224%2C1749526310%2C8d778%2Ac2CjAtTPswAtRoKo_E8L5oIdnZ9Lwl_pYqei91QBA7Ezi2clNqC0AnptOZ4kNPXqL9ZvUSVnF1SGk0VkFUN2o5bG1rUTN1eHJrVjRjTGdDMnZGWUZERTZKMUVFRE44NjAtb1AtSnNySjlPVkJITUlRSWVpblh1WXdPMV8tZ1R5VE1BdHF1U1RRQ1ZRIIEC'
 
 class WebSocketServer:
-    """
-    WebSocketServer initializes a FastAPI application with WebSocket endpoints and a broadcast endpoint.
-
-    Attributes:
-        config (dict): Configuration dictionary.
-        app (FastAPI): FastAPI application instance.
-        router (APIRouter): APIRouter instance for routing.
-        connected_clients (List[WebSocket]): List of connected WebSocket clients for "/client-ws".
-        server_ws_clients (List[WebSocket]): List of connected WebSocket clients for "/server-ws".
-    """
-
     def __init__(self, open_llm_vtuber_main_config: Dict | None = None):
-        """
-        Initializes the WebSocketServer with the given configuration.
-        """
         logger.info(f"t41372/Open-LLM-VTuber, version {__init__.__version__}")
         self.app = FastAPI()
         self.router = APIRouter()
         self.connected_clients: List[WebSocket] = []
         self.open_llm_vtuber_main_config = open_llm_vtuber_main_config
 
-        # Initialize model manager
         self.preload_models = self.open_llm_vtuber_main_config.get("SERVER", {}).get(
             "PRELOAD_MODELS", False
         )
+
         if self.preload_models:
             logger.info("Preloading ASR and TTS models...")
             logger.info(
@@ -55,26 +60,51 @@ class WebSocketServer:
 
             self.model_manager = ModelManager(self.open_llm_vtuber_main_config)
             self.model_manager.initialize_models()
+        else:
+            self.model_manager = ModelManager(self.open_llm_vtuber_main_config)
+
 
         self._setup_routes()
         self._mount_static_files()
         self.app.include_router(self.router)
 
+
+
+    async def run_bilibili_client(self):
+        """
+        Run the Bilibili client as a background task.
+        Whenever a new danmaku message arrives, we feed it into conversation_chain.
+        """
+        await self.init_bilibili_session()
+        room_id = TEST_ROOM_IDS[0]
+        client = blivedm.BLiveClient(room_id, session=self.session)
+        handler = MyBiliHandler(self.open_llm_vtuber)
+        client.set_handler(handler)
+
+        client.start()
+        try:
+            await client.join()
+        finally:
+            await client.stop_and_close()
+
+    async def init_bilibili_session(self):
+        cookies = http.cookies.SimpleCookie()
+        cookies['SESSDATA'] = SESSDATA
+        cookies['SESSDATA']['domain'] = 'bilibili.com'
+
+        self.session = aiohttp.ClientSession()
+        self.session.cookie_jar.update_cookies(cookies)
+
     async def _handle_config_switch(
         self, websocket: WebSocket, config_file: str
     ) -> tuple[Live2dModel, OpenLLMVTuberMain] | None:
-        """处理配置切换，返回新的组件实例"""
         new_config = self._load_config_from_file(config_file)
         if new_config:
             try:
-                # 更新模型缓存
                 if self.preload_models:
                     self.model_manager.update_models(new_config)
 
-                # 更新当前配置
                 self.open_llm_vtuber_main_config.update(new_config)
-
-                # 重新初始化组件
                 l2d, open_llm_vtuber, _ = self._initialize_components(websocket)
 
                 await websocket.send_text(
@@ -90,6 +120,9 @@ class WebSocketServer:
                 )
                 logger.info(f"Configuration switched to {config_file}")
 
+                # Update the main vtuber instance as well
+                self.l2d = l2d
+                self.open_llm_vtuber = open_llm_vtuber
                 return l2d, open_llm_vtuber
 
             except Exception as e:
@@ -106,12 +139,10 @@ class WebSocketServer:
         return None
 
     def _initialize_components(
-        self, websocket: WebSocket
+        self, websocket: WebSocket | None
     ) -> tuple[Live2dModel, OpenLLMVTuberMain, AudioPayloadPreparer]:
-        """Initialize or reinitialize components with current configuration."""
         l2d = Live2dModel(self.open_llm_vtuber_main_config["LIVE2D_MODEL"])
 
-        # Use cached models if available
         custom_asr = (
             self.model_manager.cache.get("asr") if self.preload_models else None
         )
@@ -127,7 +158,6 @@ class WebSocketServer:
 
         audio_preparer = AudioPayloadPreparer()
 
-        # Set up the audio playback function
         def _websocket_audio_handler(
             sentence: str | None, filepath: str | None
         ) -> None:
@@ -146,14 +176,21 @@ class WebSocketServer:
             )
             logger.info("Payload prepared")
 
-            async def _send_audio():
-                await websocket.send_text(json.dumps(payload))
-                await asyncio.sleep(duration)
+            # If we have a websocket, send through it. Otherwise, just log.
+            if websocket is not None:
+                async def _send_audio():
+                    await websocket.send_text(json.dumps(payload))
+                    await asyncio.sleep(duration)
 
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            new_loop.run_until_complete(_send_audio())
-            new_loop.close()
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(_send_audio())
+                new_loop.close()
+            else:
+                # No websocket here, we are probably initializing at startup
+                # You can decide what to do in this scenario (e.g. just log)
+                print("no websocket")
+                pass
 
             logger.info("Audio played")
 
@@ -161,11 +198,6 @@ class WebSocketServer:
         return l2d, open_llm_vtuber, audio_preparer
 
     def _setup_routes(self):
-        """Sets up the WebSocket and broadcast routes."""
-
-        # the connection between this server and the frontend client
-        # The version 2 of the client-ws. Introduces breaking changes.
-        # This route will initiate its own main.py instance and conversation loop
         @self.app.websocket("/client-ws")
         async def websocket_endpoint(websocket: WebSocket):
             await websocket.accept()
@@ -175,10 +207,11 @@ class WebSocketServer:
 
             self.connected_clients.append(websocket)
             print("Connection established")
-
-            # Initialize components
             l2d, open_llm_vtuber, _ = self._initialize_components(websocket)
+            self.open_llm_vtuber=open_llm_vtuber
 
+            # Start Bilibili listener in background
+            asyncio.create_task(self.run_bilibili_client())
             await websocket.send_text(
                 json.dumps({"type": "set-model", "text": l2d.model_info})
             )
@@ -196,10 +229,8 @@ class WebSocketServer:
                     print(".", end="")
                     message = await websocket.receive_text()
                     data = json.loads(message)
-                    # print(f"\033\n Received ws req: {data.get('type')}\033[0m\n")
 
                     if data.get("type") == "interrupt-signal":
-                        print("Start receiving audio data from front end.")
                         if conversation_task is not None:
                             print(
                                 "\033[91mLLM hadn't finish itself. Interrupting it...",
@@ -208,24 +239,16 @@ class WebSocketServer:
                                 "\033[0m\n",
                             )
                             open_llm_vtuber.interrupt(data.get("text"))
-                            # conversation_task.cancel()
-
                     elif data.get("type") == "mic-audio-data":
                         received_data_buffer = np.append(
                             received_data_buffer,
-                            np.array(
-                                list(data.get("audio").values()), dtype=np.float32
-                            ),
+                            np.array(list(data.get("audio").values()), dtype=np.float32),
                         )
                         print("*", end="")
-
-                    elif (
-                        data.get("type") == "mic-audio-end"
-                        or data.get("type") == "text-input"
-                    ):
+                    elif data.get("type") in ["mic-audio-end", "text-input"]:
                         print("Received audio data end from front end.")
                         await websocket.send_text(
-                            json.dumps({"type": "full-text", "text": "思考中..."})
+                            json.dumps({"type": "full-text", "text": "Thinking..."})
                         )
                         if data.get("type") == "text-input":
                             user_input = data.get("text")
@@ -276,7 +299,6 @@ class WebSocketServer:
                             )
                             if result:
                                 l2d, open_llm_vtuber = result
-
                     elif data.get("type") == "fetch-backgrounds":
                         bg_files = self._scan_bg_directory()
                         await websocket.send_text(
@@ -287,10 +309,10 @@ class WebSocketServer:
 
             except WebSocketDisconnect:
                 self.connected_clients.remove(websocket)
-                open_llm_vtuber = None
+                # We do not reset the main vtuber instance here, because it's global now.
 
     def _scan_config_alts_directory(self) -> List[str]:
-        config_files = ["conf.yaml"]  # default config file
+        config_files = ["conf.yaml"]
         config_alts_dir = self.open_llm_vtuber_main_config.get(
             "CONFIG_ALTS_DIR", "config_alts"
         )
@@ -301,15 +323,6 @@ class WebSocketServer:
         return config_files
 
     def _load_config_from_file(self, filename: str) -> Dict:
-        """
-        Load configuration from a YAML file with robust encoding handling.
-
-        Args:
-            filename: Name of the config file
-
-        Returns:
-            Dict: Loaded configuration or None if loading fails
-        """
         if filename == "conf.yaml":
             return load_config_with_env("conf.yaml")
 
@@ -322,7 +335,6 @@ class WebSocketServer:
             logger.error(f"Config file not found: {file_path}")
             return None
 
-        # Try common encodings first
         encodings = ["utf-8", "utf-8-sig", "gbk", "gb2312", "ascii"]
         content = None
 
@@ -335,7 +347,6 @@ class WebSocketServer:
                 continue
 
         if content is None:
-            # Try detecting encoding as last resort
             try:
                 with open(file_path, "rb") as file:
                     raw_data = file.read()
@@ -364,7 +375,6 @@ class WebSocketServer:
         return bg_files
 
     def _mount_static_files(self):
-        """Mounts static file directories."""
         self.app.mount(
             "/live2d-models",
             StaticFiles(directory="live2d-models"),
@@ -373,139 +383,89 @@ class WebSocketServer:
         self.app.mount("/", StaticFiles(directory="./static", html=True), name="static")
 
     def run(self, host: str = "127.0.0.1", port: int = 8000, log_level: str = "info"):
-        """Runs the FastAPI application using Uvicorn."""
-        import uvicorn
-
         uvicorn.run(self.app, host=host, port=port, log_level=log_level)
 
     @staticmethod
     def clean_cache():
-        """Clean the cache directory by removing and recreating it."""
         cache_dir = "./cache"
         if os.path.exists(cache_dir):
             shutil.rmtree(cache_dir)
             os.makedirs(cache_dir)
 
     def clean_up(self):
-        """Clean up resources before shutting down"""
         self.clean_cache()
-        # Clear model cache
         self.model_manager.cache.clear()
 
 
 def load_config_with_env(path) -> dict:
-    """
-    Load the configuration file with environment variables.
-
-    Parameters:
-    - path (str): The path to the configuration file.
-
-    Returns:
-    - dict: The configuration dictionary.
-
-    Raises:
-    - FileNotFoundError if the configuration file is not found.
-    - yaml.YAMLError if the configuration file is not a valid YAML file.
-    """
     with open(path, "r", encoding="utf-8") as file:
         content = file.read()
 
-    # Match ${VAR_NAME}
     pattern = re.compile(r"\$\{(\w+)\}")
 
-    # replace ${VAR_NAME} with os.getenv('VAR_NAME')
     def replacer(match):
         env_var = match.group(1)
-        return os.getenv(
-            env_var, match.group(0)
-        )  # return the original string if the env var is not found
+        return os.getenv(env_var, match.group(0))
 
     content = pattern.sub(replacer, content)
-
-    # Load the yaml file
     return yaml.safe_load(content)
 
 
 class ModelCache:
-    """Manager for caching ASR and TTS models"""
-
     def __init__(self):
         self._cache: Dict[str, Any] = {}
 
     def get(self, key: str) -> Any:
-        """get the cached model"""
         return self._cache.get(key)
 
     def set(self, key: str, model: Any) -> None:
-        """set the cached model"""
         self._cache[key] = model
 
     def remove(self, key: str) -> None:
-        """remove the cached model"""
         self._cache.pop(key, None)
 
     def clear(self) -> None:
-        """clear the cache"""
         self._cache.clear()
 
 
 class ModelManager:
-    """Manager for ASR and TTS models"""
-
     def __init__(self, config: Dict):
         self.config = config
-        self._old_config = config.copy()  # save a copy of the initial config
+        self._old_config = config.copy()
         self.cache = ModelCache()
 
     def initialize_models(self) -> None:
-        """Initialize ASR and TTS models"""
         if self.config.get("VOICE_INPUT_ON", False):
             self._init_asr()
         if self.config.get("TTS_ON", False):
             self._init_tts()
 
     def _init_asr(self) -> None:
-        """Initialize ASR model"""
         from asr.asr_factory import ASRFactory
-
         asr_model = self.config.get("ASR_MODEL")
         asr_config = self.config.get(asr_model, {})
         self.cache.set("asr", ASRFactory.get_asr_system(asr_model, **asr_config))
         logger.info(f"ASR model {asr_model} loaded successfully")
 
     def _init_tts(self) -> None:
-        """Initialize TTS model"""
         from tts.tts_factory import TTSFactory
-
         tts_model = self.config.get("TTS_MODEL")
         tts_config = self.config.get(tts_model, {})
         self.cache.set("tts", TTSFactory.get_tts_engine(tts_model, **tts_config))
         logger.info(f"TTS model {tts_model} loaded successfully")
 
     def update_models(self, new_config: Dict) -> None:
-        """Update ASR and TTS models based on new configuration"""
-        try:
-            # make sure old config is saved
-            if not hasattr(self, "_old_config"):
-                self._old_config = self.config.copy()
-
-            # check if ASR or TTS models need to be reinitialized
-            if self._should_reinit_asr(new_config):
-                self.config = new_config  # update current config
-                self._update_asr()
-            if self._should_reinit_tts(new_config):
-                self.config = new_config  # update current config
-                self._update_tts()
-
-            self._old_config = new_config.copy()
+        if self._should_reinit_asr(new_config):
             self.config = new_config
+            self._update_asr()
+        if self._should_reinit_tts(new_config):
+            self.config = new_config
+            self._update_tts()
 
-        except Exception as e:
-            logger.error(f"Error during model update: {e}")
-            raise
+        self._old_config = new_config.copy()
+        self.config = new_config
 
     def _should_reinit_asr(self, new_config: Dict) -> bool:
-        """check if ASR model needs to be reinitialized"""
         if self._old_config.get("VOICE_INPUT_ON") != new_config.get("VOICE_INPUT_ON"):
             return True
 
@@ -514,24 +474,15 @@ class ModelManager:
         if old_model != new_model:
             return True
 
-        # if model is the same, check if any settings have changed
         if old_model:
             old_model_config = self._old_config.get(old_model, {})
             new_model_config = new_config.get(old_model, {})
-
             if old_model_config != new_model_config:
-                logger.info(f"ASR model {old_model} settings changed")
-                for key in set(old_model_config.keys()) | set(new_model_config.keys()):
-                    if old_model_config.get(key) != new_model_config.get(key):
-                        logger.debug(
-                            f"ASR setting changed - {key}: {old_model_config.get(key)} -> {new_model_config.get(key)}"
-                        )
                 return True
 
         return False
 
     def _should_reinit_tts(self, new_config: Dict) -> bool:
-        """check if TTS model needs to be reinitialized"""
         if self._old_config.get("TTS_ON") != new_config.get("TTS_ON"):
             return True
 
@@ -543,20 +494,12 @@ class ModelManager:
         if old_model:
             old_model_config = self._old_config.get(old_model, {})
             new_model_config = new_config.get(old_model, {})
-
             if old_model_config != new_model_config:
-                logger.info(f"TTS model {old_model} settings changed")
-                for key in set(old_model_config.keys()) | set(new_model_config.keys()):
-                    if old_model_config.get(key) != new_model_config.get(key):
-                        logger.debug(
-                            f"TTS setting changed - {key}: {old_model_config.get(key)} -> {new_model_config.get(key)}"
-                        )
                 return True
 
         return False
 
     def _update_asr(self) -> None:
-        """update ASR model"""
         if self.config.get("VOICE_INPUT_ON", False):
             logger.info("Reinitializing ASR...")
             self._init_asr()
@@ -565,7 +508,6 @@ class ModelManager:
             self.cache.remove("asr")
 
     def _update_tts(self) -> None:
-        """update TTS model"""
         if self.config.get("TTS_ON", False):
             logger.info("Reinitializing TTS...")
             self._init_tts()
@@ -574,15 +516,162 @@ class ModelManager:
             self.cache.remove("tts")
 
 
-if __name__ == "__main__":
+# Define a handler for Bilibili messages that triggers conversation_chain
+# Constants
+GIFT_COOLDOWN_SECONDS = 20
+MAX_NORMAL_QUEUE_SIZE = 50  # If more than this, skip adding new normal messages
+IDLE_CHECK_INTERVAL = 0.1  # Check every 0.1s if we are idle
 
+class MyBiliHandler(blivedm.BaseHandler):
+    def __init__(self, vtuber_instance):
+        super().__init__()
+        self.vtuber_instance = vtuber_instance
+
+        # Two queues: one for gift messages (high priority), one for normal messages
+        self.gift_queue = asyncio.Queue()
+        self.message_queue = asyncio.Queue()
+
+        # Track last gift times to prevent duplication in cooldown period
+        self.last_gift_times: Dict[str, float] = {}
+
+        # Track last processed message time
+        self.last_processed_time = time.time()
+
+        # Idle prompts
+        self.idle_prompts = [
+            "今天大家过的怎么样",
+            "好无聊",
+            "直播间人真少呢",
+            "没有人理你",
+            "没人回你话呢",
+            "多和你交流"
+        ]
+
+        # Start the consumer task
+        asyncio.create_task(self._consumer_task())
+
+    async def _consumer_task(self):
+        """
+        Continuously runs in the background, processing messages one by one.
+        Prioritizes gift_queue over message_queue.
+        If no messages for 20 seconds, add a random idle prompt.
+        """
+        while True:
+            # Check if we have a gift message first
+            if not self.gift_queue.empty():
+                user_input_str, _ = await self.gift_queue.get()
+                await self._handle_message(user_input_str)
+                self.gift_queue.task_done()
+                self.last_processed_time = time.time()
+            elif not self.message_queue.empty():
+                user_input_str, _ = await self.message_queue.get()
+                await self._handle_message(user_input_str)
+                self.message_queue.task_done()
+                self.last_processed_time = time.time()
+            else:
+                # No messages in any queue, check if idle for >20s
+                if time.time() - self.last_processed_time > 20:
+                    # Attempt to add an idle prompt message
+                    await self._add_idle_message()
+                    # Update last processed time to avoid spamming idle messages
+                    self.last_processed_time = time.time()
+                # Wait a bit before checking again
+                await asyncio.sleep(IDLE_CHECK_INTERVAL)
+
+    async def _handle_message(self, user_input_str: str):
+        """
+        Handle one message by running the conversation_chain.
+        """
+        response = await asyncio.to_thread(self.vtuber_instance.conversation_chain, user_input_str)
+        print(f"Bilibili AI Response: {response}")
+
+    def _should_skip_gift(self, uname: str) -> bool:
+        """
+        Check if we should skip this gift based on last gift time.
+        If the user gifted less than GIFT_COOLDOWN_SECONDS ago, skip.
+        """
+        now = time.time()
+        last_time = self.last_gift_times.get(uname, 0)
+        if now - last_time < GIFT_COOLDOWN_SECONDS:
+            return True
+        self.last_gift_times[uname] = now
+        return False
+
+    async def _add_message_to_queue(self, user_input_str: str, is_gift: bool):
+        """
+        Add a message to the appropriate queue.
+        - Gift messages always go to gift_queue.
+        - Normal messages go to message_queue. If it's too large, we skip.
+        """
+        if is_gift:
+            await self.gift_queue.put((user_input_str, True))
+        else:
+            # Check size of normal message queue before adding
+            if self.message_queue.qsize() < MAX_NORMAL_QUEUE_SIZE:
+                await self.message_queue.put((user_input_str, False))
+            else:
+                # If queue is full, skip adding new normal messages
+                print("Message queue full, skipping non-gift message")
+
+    async def _add_idle_message(self):
+        """
+        Add a random idle prompt message to the normal message queue, if not full.
+        """
+        if self.message_queue.qsize() < MAX_NORMAL_QUEUE_SIZE:
+            idle_message = random.choice(self.idle_prompts)
+            print(f"No messages for >20s, adding idle prompt: {idle_message}")
+            await self.message_queue.put((idle_message, False))
+        else:
+            print("Message queue full, cannot add idle prompt.")
+
+    def _on_heartbeat(self, client: blivedm.BLiveClient, message: web_models.HeartbeatMessage):
+        print(f'[{client.room_id}] 心跳')
+
+    def _on_danmaku(self, client: blivedm.BLiveClient, message: web_models.DanmakuMessage):
+        print(f'[{client.room_id}] {message.uname}: {message.msg}')
+        # Normal chat message, add to normal queue
+        asyncio.create_task(self._add_message_to_queue(f'{message.uname}: {message.msg}', False))
+
+    def _on_gift(self, client: blivedm.BLiveClient, message: web_models.GiftMessage):
+        print(f'[{client.room_id}] {message.uname} 赠送 {message.gift_name}x{message.num}')
+        # Gift message. Check if we should skip due to cooldown
+        if self._should_skip_gift(message.uname):
+            print(f"Skipping gift from {message.uname} due to cooldown.")
+            return
+        # Otherwise, gift goes to top priority queue
+        asyncio.create_task(self._add_message_to_queue(
+            f'{message.uname} 赠送 {message.gift_name}x{message.num} [真的礼物]',
+            True
+        ))
+
+    def _on_buy_guard(self, client: blivedm.BLiveClient, message: web_models.GuardBuyMessage):
+        print(f'[{client.room_id}] {message.username} 购买 {message.gift_name}')
+        # Buying guard also considered a kind of gift message (or special event)
+        if self._should_skip_gift(message.username):
+            print(f"Skipping guard buy from {message.username} due to cooldown.")
+            return
+        asyncio.create_task(self._add_message_to_queue(
+            f'{message.username} 购买 {message.gift_name} [真的礼物]',
+            True
+        ))
+
+    def _on_super_chat(self, client: blivedm.BLiveClient, message: web_models.SuperChatMessage):
+        print(f'[{client.room_id}] 醒目留言 ¥{message.price} {message.uname}: {message.message}')
+        # Super chat is also considered a gift-like message (special message)
+        if self._should_skip_gift(message.uname):
+            print(f"Skipping super chat from {message.uname} due to cooldown.")
+            return
+        asyncio.create_task(self._add_message_to_queue(
+            f'醒目留言 ¥{message.price} {message.uname}: {message.message} [真的礼物]',
+            True
+        ))
+
+
+if __name__ == "__main__":
     atexit.register(WebSocketServer.clean_cache)
 
-    # Load configurations from yaml file
     config = load_config_with_env("conf.yaml")
+    config["LIVE2D"] = True
 
-    config["LIVE2D"] = True  # make sure the live2d is enabled
-
-    # Initialize and run the WebSocket server
     server = WebSocketServer(open_llm_vtuber_main_config=config)
     server.run(host=config["HOST"], port=config["PORT"])

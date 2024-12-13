@@ -1,3 +1,4 @@
+import http
 import os
 import sys
 import re
@@ -7,11 +8,16 @@ import atexit
 import threading
 import queue
 import uuid
+import asyncio
 from typing import Callable, Iterator, Optional
 from loguru import logger
 import numpy as np
 import yaml
 import chardet
+
+import aiohttp
+import blivedm
+import blivedm.models.web as web_models
 
 import __init__
 from asr.asr_factory import ASRFactory
@@ -26,18 +32,14 @@ from translate.translate_interface import TranslateInterface
 from translate.translate_factory import TranslateFactory
 from utils.audio_preprocessor import audio_filter
 
+TEST_ROOM_IDS = [5624404]  # Change this to the room you want to monitor
+SESSDATA = '08c12224%2C1749526310%2C8d778%2Ac2CjAtTPswAtRoKo_E8L5oIdnZ9Lwl_pYqei91QBA7Ezi2clNqC0AnptOZ4kNPXqL9ZvUSVnF1SGk0VkFUN2o5bG1rUTN1eHJrVjRjTGdDMnZGWUZERTZKMUVFRE44NjAtb1AtSnNySjlPVkJITUlRSWVpblh1WXdPMV8tZ1R5VE1BdHF1U1RRQ1ZRIIEC'
 
 class OpenLLMVTuberMain:
     """
     The main class for the OpenLLM VTuber.
     It initializes the Live2D controller, ASR, TTS, and LLM based on the provided configuration.
     Run `conversation_chain` to start one conversation (user_input -> llm -> speak).
-
-    Attributes:
-    - config (dict): The configuration dictionary.
-    - llm (LLMInterface): The LLM instance.
-    - asr (ASRInterface): The ASR instance.
-    - tts (TTSInterface): The TTS instance.
     """
 
     EXEC_FLAG_CHECK_TIMEOUT = 8  # seconds
@@ -138,40 +140,9 @@ class OpenLLMVTuberMain:
     def set_audio_output_func(
         self, audio_output_func: Callable[[Optional[str], Optional[str]], None]
     ) -> None:
-        """
-        Set the audio output function to be used for playing audio files.
-        The function should accept two arguments: sentence (str) and filepath (str).
-
-        sentence: str | None
-        - The sentence to be displayed on the frontend.
-        - If None, empty sentence will be displayed.
-
-        filepath: str | None
-        - The path to the audio file to be played.
-        - If None, no audio will be played.
-
-        Here is an example of the function:
-        ~~~python
-        def _play_audio_file(sentence: str | None, filepath: str | None) -> None:
-            if filepath is None:
-                print("No audio to be streamed. Response is empty.")
-                return
-
-            if sentence is None:
-                sentence = ""
-            print(f">> Playing {filepath}...")
-            playsound(filepath)
-        ~~~
-        """
-
         self._play_audio_file = audio_output_func
 
-        # def _play_audio_file(self, sentence: str, filepath: str | None) -> None:
-
     def get_system_prompt(self) -> str:
-        """
-        Construct and return the system prompt based on the configuration file.
-        """
         if self.config.get("PERSONA_CHOICE"):
             system_prompt = prompt_loader.load_persona(
                 self.config.get("PERSONA_CHOICE")
@@ -193,19 +164,6 @@ class OpenLLMVTuberMain:
     # Main conversation methods
 
     def conversation_chain(self, user_input: str | np.ndarray | None = None) -> str:
-        """
-        One iteration of the main conversation.
-        1. Get user input (text or audio) if not provided as an argument
-        2. Call the LLM with the user input
-        3. Speak (or not)
-
-        Parameters:
-        - user_input (str, numpy array, or None): The user input to be used in the conversation. If it's string, it will be considered as user input. If it's a numpy array, it will be transcribed. If it's None, we'll request input from the user.
-
-        Returns:
-        - str: The full response from the LLM
-        """
-
         if not self._continue_exec_flag.wait(
             timeout=self.EXEC_FLAG_CHECK_TIMEOUT
         ):  # Wait for the flag to be set
@@ -226,10 +184,8 @@ class OpenLLMVTuberMain:
         c[2] = "\033[92m"
         c[3] = "\033[0m"
 
-        # Apply the color to the console output
         print(f"{c[color_code]}New Conversation Chain started!")
 
-        # if user_input is not string, make it string
         if user_input is None:
             user_input = self.get_user_input()
         elif isinstance(user_input, np.ndarray):
@@ -238,7 +194,8 @@ class OpenLLMVTuberMain:
 
         if user_input.strip().lower() == self.config.get("EXIT_PHRASE", "exit").lower():
             print("Exiting...")
-            exit()
+            # Instead of exit(), we just return a goodbye message
+            return "Goodbye!"
 
         print(f"User input: {user_input}")
 
@@ -253,6 +210,7 @@ class OpenLLMVTuberMain:
                     return None
                 full_response += char
                 print(char, end="")
+            print()  # newline after printing
             return full_response
 
         full_response = self.speak(chat_completion)
@@ -263,36 +221,17 @@ class OpenLLMVTuberMain:
         return full_response
 
     def get_user_input(self) -> str:
-        """
-        Get user input using the method specified in the configuration file.
-        It can be from the console, local microphone, or the browser microphone.
-
-        Returns:
-        - str: The user input
-        """
-        # for live2d with browser, their input are now injected by the server class
-        # and they no longer use this method
         if self.config.get("VOICE_INPUT_ON", False):
-            # get audio from the local microphone
             print("Listening from the microphone...")
             return self.asr.transcribe_with_local_vad()
         else:
             return input("\n>> ")
 
     def speak(self, chat_completion: Iterator[str]) -> str:
-        """
-        Speak the chat completion using the TTS engine.
-
-        Parameters:
-        - chat_completion (Iterator[str]): The chat completion to speak
-
-        Returns:
-        - str: The full response from the LLM
-        """
         full_response = ""
         if self.config.get("SAY_SENTENCE_SEPARATELY", True):
             full_response = self.speak_by_sentence_chain(chat_completion)
-        else:  # say the full response at once? how stupid
+        else:
             full_response = ""
             for char in chat_completion:
                 if not self._continue_exec_flag.is_set():
@@ -315,16 +254,6 @@ class OpenLLMVTuberMain:
         return full_response
 
     def _generate_audio_file(self, sentence: str, file_name_no_ext: str) -> str | None:
-        """
-        Generate an audio file from the given sentence using the TTS engine.
-
-        Parameters:
-        - sentence (str): The sentence to generate audio from
-        - file_name_no_ext (str): The name of the audio file without the extension
-
-        Returns:
-        - str or None: The path to the generated audio file or None if the sentence is empty
-        """
         if self.verbose:
             print(f">> generating {file_name_no_ext}...")
 
@@ -340,14 +269,6 @@ class OpenLLMVTuberMain:
         return self.tts.generate_audio(sentence, file_name_no_ext=file_name_no_ext)
 
     def _play_audio_file(self, sentence: str | None, filepath: str | None) -> None:
-        """
-        Play the audio file either locally or remotely using the Live2D controller if available.
-
-        Parameters:
-        - sentence (str): The sentence to display
-        - filepath (str): The path to the audio file. If None, no audio will be streamed.
-        """
-
         if filepath is None:
             print("No audio to be streamed. Response is empty.")
             return
@@ -359,7 +280,6 @@ class OpenLLMVTuberMain:
             if self.verbose:
                 print(f">> Playing {filepath}...")
             self.tts.play_audio_file_local(filepath)
-
             self.tts.remove_file(filepath, verbose=self.verbose)
         except ValueError as e:
             if str(e) == "Audio is empty or all zero.":
@@ -370,10 +290,6 @@ class OpenLLMVTuberMain:
             print(f"Error playing the audio file {filepath}: {e}")
 
     def speak_by_sentence_chain(self, chat_completion: Iterator[str]) -> str:
-        """
-        Generate and play the chat completion sentences one by one using the TTS engine.
-        Now properly handles interrupts in a multi-threaded environment using the existing _continue_exec_flag.
-        """
         task_queue = queue.Queue()
         full_response = [""]  # Use a list to store the full response
         interrupted_error_event = threading.Event()
@@ -411,7 +327,7 @@ class OpenLLMVTuberMain:
                             )
 
                             audio_filepath = self._generate_audio_file(
-                                tts_target_sentence, file_name_no_ext=uuid.uuid4()
+                                tts_target_sentence, file_name_no_ext=str(uuid.uuid4())
                             )
 
                             if not self._continue_exec_flag.is_set():
@@ -424,13 +340,12 @@ class OpenLLMVTuberMain:
                             index += 1
                             sentence_buffer = ""
 
-                # Handle any remaining text in the buffer
                 if sentence_buffer:
                     if not self._continue_exec_flag.is_set():
                         raise InterruptedError("Producer interrupted")
                     print("\n")
                     audio_filepath = self._generate_audio_file(
-                        sentence_buffer, file_name_no_ext=uuid.uuid4()
+                        sentence_buffer, file_name_no_ext=str(uuid.uuid4())
                     )
                     audio_info = {
                         "sentence": sentence_buffer,
@@ -441,7 +356,7 @@ class OpenLLMVTuberMain:
             except InterruptedError:
                 print("\nProducer interrupted")
                 interrupted_error_event.set()
-                return  # Exit the function
+                return
             except Exception as e:
                 print(
                     f"Producer error: Error generating audio for sentence: '{sentence_buffer}'.\n{e}",
@@ -455,14 +370,11 @@ class OpenLLMVTuberMain:
             self.heard_sentence = ""
 
             while True:
-
                 try:
                     if not self._continue_exec_flag.is_set():
                         raise InterruptedError("😱Consumer interrupted")
 
-                    audio_info = task_queue.get(
-                        timeout=0.1
-                    )  # Short timeout to check for interrupts
+                    audio_info = task_queue.get(timeout=0.1)
                     if audio_info is None:
                         break  # End of production
                     if audio_info:
@@ -473,11 +385,11 @@ class OpenLLMVTuberMain:
                         )
                     task_queue.task_done()
                 except queue.Empty:
-                    continue  # No item available, continue checking for interrupts
+                    continue
                 except InterruptedError as e:
                     print(f"\n{str(e)}, stopping worker threads")
                     interrupted_error_event.set()
-                    return  # Exit the function
+                    return
                 except Exception as e:
                     print(
                         f"Consumer error: Error playing sentence '{audio_info['sentence']}'.\n {e}"
@@ -503,32 +415,17 @@ class OpenLLMVTuberMain:
         return full_response[0]
 
     def interrupt(self, heard_sentence: str = "") -> None:
-        """Set the interrupt flag to stop the conversation chain.
-        Preferably provide the sentences that were already shown or heard by the user before the interrupt so that the LLM can handle the memory properly.
-
-        Parameters:
-        - heard_sentence (str): The sentence that was already shown or heard by the user before the interrupt.
-            (because apparently the user won't know the rest of the response.)
-        """
         self._continue_exec_flag.clear()
         self.llm.handle_interrupt(heard_sentence)
 
     def _interrupt_post_processing(self) -> None:
-        """Perform post-processing tasks (like resetting the continue flag to allow next conversation chain to start) after an interrupt."""
         self._continue_exec_flag.set()  # Reset the interrupt flag
 
     def _check_interrupt(self):
-        """Check if we are in an interrupt state and raise an exception if we are."""
         if not self._continue_exec_flag.is_set():
             raise InterruptedError("Conversation chain interrupted: checked")
 
     def is_complete_sentence(self, text: str):
-        """
-        Check if the text is a complete sentence.
-        text: str
-            the text to check
-        """
-
         white_list = [
             "...",
             "Dr.",
@@ -575,7 +472,6 @@ class OpenLLMVTuberMain:
             "！",
             "……",
             "？",
-
         ]
         return any(text.strip().endswith(punct) for punct in punctuation_blacklist)
 
@@ -586,19 +482,10 @@ class OpenLLMVTuberMain:
             os.makedirs(cache_dir)
 
     def load_and_apply_config(self, config_file: str) -> None:
-        """
-        Load and apply the selected configuration settings from the alternative configuration file.
-
-        Parameters:
-        - config_file (str): The path to the alternative configuration file.
-        """
         with open(config_file, "r", encoding="utf-8") as file:
             new_config = yaml.safe_load(file)
 
-        # Update the current configuration with the new settings
         self.config.update(new_config)
-
-        # Reinitialize components with the new configuration
         self.live2d = self.init_live2d()
         self.asr = self.init_asr()
         self.tts = self.init_tts()
@@ -606,12 +493,6 @@ class OpenLLMVTuberMain:
         self.llm = self.init_llm()
 
     def init_translator(self) -> TranslateInterface | None:
-        """
-        Initialize the translator based on the configuration.
-
-        Returns:
-        - TranslateInterface or None: The initialized translator or None if not enabled.
-        """
         if self.config.get("TRANSLATE_AUDIO", False):
             try:
                 translate_provider = self.config.get("TRANSLATE_PROVIDER", "DeepLX")
@@ -629,23 +510,9 @@ class OpenLLMVTuberMain:
 
 
 def load_config_with_env(path) -> dict:
-    """
-    Load the configuration file with environment variables.
-
-    Parameters:
-    - path (str): The path to the configuration file.
-
-    Returns:
-    - dict: The configuration dictionary.
-
-    Raises:
-    - FileNotFoundError if the configuration file is not found.
-    - yaml.YAMLError if the configuration file is not a valid YAML file.
-    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    # Try common encodings first
     encodings = ["utf-8", "utf-8-sig", "gbk", "gb2312", "ascii"]
     content = None
 
@@ -658,7 +525,6 @@ def load_config_with_env(path) -> dict:
             continue
 
     if content is None:
-        # Try detecting encoding as last resort
         try:
             with open(path, "rb") as file:
                 raw_data = file.read()
@@ -669,10 +535,8 @@ def load_config_with_env(path) -> dict:
             logger.error(f"Error detecting encoding for config file {path}: {e}")
             raise UnicodeError(f"Failed to decode config file {path} with any encoding")
 
-    # Match ${VAR_NAME}
     pattern = re.compile(r"\$\{(\w+)\}")
 
-    # replace ${VAR_NAME} with os.getenv('VAR_NAME')
     def replacer(match):
         env_var = match.group(1)
         return os.getenv(env_var, match.group(0))
@@ -686,6 +550,64 @@ def load_config_with_env(path) -> dict:
         raise
 
 
+# Bilibili integration
+
+class MyHandler(blivedm.BaseHandler):
+    def __init__(self, vtuber_instance: OpenLLMVTuberMain):
+        super().__init__()
+        self.vtuber_instance = vtuber_instance
+
+    def _on_heartbeat(self, client: blivedm.BLiveClient, message: web_models.HeartbeatMessage):
+        print(f'[{client.room_id}] 心跳')
+
+    def _on_danmaku(self, client: blivedm.BLiveClient, message: web_models.DanmakuMessage):
+        print(f'[{client.room_id}] {message.uname}: {message.msg}')
+
+        # Treat the incoming message as user input
+        async def run_conversation():
+            # Run conversation_chain in a separate thread to avoid blocking the event loop
+            response = await asyncio.to_thread(self.vtuber_instance.conversation_chain, message.msg)
+            print(f"AI Response: {response}")
+
+        asyncio.create_task(run_conversation())
+
+    def _on_gift(self, client: blivedm.BLiveClient, message: web_models.GiftMessage):
+        print(f'[{client.room_id}] {message.uname} 赠送 {message.gift_name}x{message.num}')
+
+    def _on_buy_guard(self, client: blivedm.BLiveClient, message: web_models.GuardBuyMessage):
+        print(f'[{client.room_id}] {message.username} 购买 {message.gift_name}')
+
+    def _on_super_chat(self, client: blivedm.BLiveClient, message: web_models.SuperChatMessage):
+        print(f'[{client.room_id}] 醒目留言 ¥{message.price} {message.uname}: {message.message}')
+
+
+async def init_session():
+    cookies = http.cookies.SimpleCookie()
+    cookies['SESSDATA'] = SESSDATA
+    cookies['SESSDATA']['domain'] = 'bilibili.com'
+
+    global session
+    session = aiohttp.ClientSession()
+    session.cookie_jar.update_cookies(cookies)
+    return session
+
+async def run_single_client(vtuber_instance: OpenLLMVTuberMain):
+    print("run_single_client")
+    session = await init_session()
+    room_id = TEST_ROOM_IDS
+    client = blivedm.BLiveClient(room_id, session=session)
+    handler = MyHandler(vtuber_instance)
+    client.set_handler(handler)
+
+    client.start()
+    try:
+        # Keep running indefinitely; press Ctrl+C to exit
+        await client.join()
+    finally:
+        await client.stop_and_close()
+        await session.close()
+
+
 if __name__ == "__main__":
 
     logger.add(sys.stderr, level="DEBUG")
@@ -696,6 +618,7 @@ if __name__ == "__main__":
 
     atexit.register(vtuber_main.clean_cache)
 
+    # If you want to allow interrupts from console:
     def _interrupt_on_i():
         while input(">>> say i and press enter to interrupt: ") == "i":
             print("\n\n!!!!!!!!!! interrupt !!!!!!!!!!!!...\n")
@@ -705,10 +628,9 @@ if __name__ == "__main__":
     if config.get("VOICE_INPUT_ON", False):
         threading.Thread(target=_interrupt_on_i).start()
 
-    print("tts on: ", vtuber_main.config.get("TTS_ON", False))
-    while True:
-        try:
-            vtuber_main.conversation_chain()
-        except InterruptedError as e:
-            print(f"😢Conversation was interrupted. {e}")
-            continue
+    print("TTS on: ", vtuber_main.config.get("TTS_ON", False))
+
+    # Instead of the while True loop, we run the Bilibili listener:
+    # This will trigger `conversation_chain` whenever a new message arrives.
+    print("asyncio")
+    asyncio.run(run_single_client(vtuber_main))
