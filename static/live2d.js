@@ -56,6 +56,17 @@ const live2dModule = (function () {
     //     model2.expression();
     //   }
     // });
+  app.ticker.add(() => {
+    if (!pointerInteractionEnabled) {
+      currentX += (targetX - currentX) * lerpSpeed;
+      currentY += (targetY - currentY) * lerpSpeed;
+      //console.log(currentX, currentY);
+      model2.internalModel.focusController.targetX = currentX;
+      model2.internalModel.focusController.targetY = currentY;
+    }
+  });
+
+
   }
 
   function draggable(model) {
@@ -86,17 +97,76 @@ const live2dModule = (function () {
   };
 })();
 
+let idleInterval;
+let currentX = 0;
+let currentY = 0;
+let targetX = 0;
+let targetY = 0;
+
+// Interpolation speed (adjust to taste)
+const lerpSpeed = 0.05; // Smaller = slower, smoother; larger = quicker
+
 document.addEventListener('DOMContentLoaded', function () {
   const pointerInteractionBtn = document.getElementById('pointerInteractionBtn');
 
+
+
   pointerInteractionBtn.addEventListener('click', function () {
-    window.pointerInteractionEnabled = !window.pointerInteractionEnabled;
-    pointerInteractionBtn.textContent = window.pointerInteractionEnabled ? "👀 Pointer Interactive On" : "❌ Pointer Interactive Off";
-    model2.interactive = window.pointerInteractionEnabled;
-    if (!window.pointerInteractionEnabled) {
-      // attempt to reset the pointer interaction
-      model2.internalModel.focusController.targetX = 0;
-      model2.internalModel.focusController.targetY = 0;
+    pointerInteractionEnabled = !pointerInteractionEnabled;
+    pointerInteractionBtn.textContent = pointerInteractionEnabled
+      ? "👀 Pointer Interactive On"
+      : "❌ Pointer Interactive Off";
+
+    if (model2) {
+      model2.interactive = pointerInteractionEnabled;
+    }
+
+    if (!pointerInteractionEnabled) {
+      // When interaction turns off, start idle motion
+      startIdleMotion();
+    } else {
+      // When interaction turns on, stop idle motion and reset
+      stopIdleMotion();
+      resetFocus();
     }
   });
 });
+
+
+
+function startIdleMotion() {
+  stopIdleMotion(); // Ensure we don't double-run the interval
+  // Immediately set a first random target to kick things off
+  setRandomTarget();
+
+  idleInterval = setInterval(() => {
+    setRandomTarget();
+  }, 10000); // Change gaze every 2 seconds
+}
+
+function stopIdleMotion() {
+  if (idleInterval) {
+    clearInterval(idleInterval);
+    idleInterval = null;
+  }
+}
+
+function resetFocus() {
+  if (model2 && model2.internalModel && model2.internalModel.focusController) {
+    // Reset current and target so the model looks straight ahead
+    currentX = 0;
+    currentY = 0;
+    targetX = 0;
+    targetY = 0;
+
+    model2.internalModel.focusController.targetX = 0;
+    model2.internalModel.focusController.targetY = 0;
+  }
+}
+
+function setRandomTarget() {
+  // Generate small random offsets for a subtle human-like behavior
+  targetX = (Math.random() * 1.6) - 0.8; // range: [-0.3, 0.3]
+  targetY = (Math.random() * 0.8) -0.4; // range: [-0.3, 0.3]
+
+}

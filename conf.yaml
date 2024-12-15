@@ -27,7 +27,7 @@ ollama:
   ORGANIZATION_ID: "org_eternity"
   PROJECT_ID: "project_glass"
   ## LLM name
-  MODEL: "qwen2.5:7b"
+  MODEL: "qwen2.5:72b"
   # system prompt is at the very end of this file
   VERBOSE: False
 
@@ -210,9 +210,11 @@ GPT_Sovits:
   # put ref audio to root path of GPT-Sovits, or set the path here
   api_url: "http://localhost:9880/"
   text_lang: "中文"
-  ref_audio_path: "output/slicer_opt/11111录zhiTutu.mp3_0003242880_0003413760.wav"
+  ref_audio_path: "output/hand_opt/11111录zhiTutu.mp3_0000054720_0000195520.wav"
   prompt_lang: "中文"
-  prompt_text: "欢迎宿梦哥哥，晚上好... 这个好好玩啊,呵呵"
+  prompt_text: "然后这样子这样子我就可以那个什么了。"
+  #“output/hand_opt/11111录zhiTutu.mp3_0004223360_0004377920.wav"
+  #“我我从喵喵喵，那里偷来的找喵喵喵，偷的”
   #"output/denoise_opt/11111录zhiTutu.mp3_0000054720_0000195520.wav"
   #"然后这样子这样子我就可以那个什么了"
 #"output/slicer_opt/11111录zhiTutu.mp3_0003242880_0003413760.wav"

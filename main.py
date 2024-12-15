@@ -253,20 +253,21 @@ class OpenLLMVTuberMain:
 
         return full_response
 
-    def _generate_audio_file(self, sentence: str, file_name_no_ext: str) -> str | None:
+    def _generate_audio_file(self, sentence: str, file_name_no_ext: str,emotion=None) -> str | None:
         if self.verbose:
             print(f">> generating {file_name_no_ext}...")
 
         if not self.tts:
             return None
 
-        if self.live2d:
-            sentence = self.live2d.remove_emotion_keywords(sentence)
 
-        if sentence.strip() == "":
+
+        sentence = sentence.strip()
+        if sentence == "":
             return None
 
-        return self.tts.generate_audio(sentence, file_name_no_ext=file_name_no_ext)
+        # Now generate audio with the extracted emotion if any
+        return self.tts.generate_audio(sentence, file_name_no_ext=file_name_no_ext, emotion=emotion)
 
     def _play_audio_file(self, sentence: str | None, filepath: str | None) -> None:
         if filepath is None:
@@ -308,6 +309,18 @@ class OpenLLMVTuberMain:
                         sentence_buffer += char
                         full_response[0] += char
                         if self.is_complete_sentence(sentence_buffer):
+                            # Extract emotion from the sentence if present
+                            # Assuming emotion is indicated like [happy], [sad], [angry], etc.
+                            emotion_pattern = r"\[([a-zA-Z0-9_]+)\]"
+                            matches = re.findall(emotion_pattern, sentence_buffer)
+                            emotion = None
+                            if matches:
+                                # If multiple emotions are found, decide how to handle it.
+                                # For simplicity, let's use the first one.
+                                emotion = matches[0]
+                                # Remove all emotion tags from the sentence
+                                sentence_buffer = re.sub(emotion_pattern, "", sentence_buffer)
+
                             if self.verbose:
                                 print("\n")
                             if not self._continue_exec_flag.is_set():
@@ -327,7 +340,7 @@ class OpenLLMVTuberMain:
                             )
 
                             audio_filepath = self._generate_audio_file(
-                                tts_target_sentence, file_name_no_ext=str(uuid.uuid4())
+                                tts_target_sentence, file_name_no_ext=str(uuid.uuid4()),emotion=emotion
                             )
 
                             if not self._continue_exec_flag.is_set():
@@ -340,18 +353,18 @@ class OpenLLMVTuberMain:
                             index += 1
                             sentence_buffer = ""
 
-                if sentence_buffer:
-                    if not self._continue_exec_flag.is_set():
-                        raise InterruptedError("Producer interrupted")
-                    print("\n")
-                    audio_filepath = self._generate_audio_file(
-                        sentence_buffer, file_name_no_ext=str(uuid.uuid4())
-                    )
-                    audio_info = {
-                        "sentence": sentence_buffer,
-                        "audio_filepath": audio_filepath,
-                    }
-                    task_queue.put(audio_info)
+                            if sentence_buffer:
+                                if not self._continue_exec_flag.is_set():
+                                    raise InterruptedError("Producer interrupted")
+                                print("\n")
+                                audio_filepath = self._generate_audio_file(
+                                    sentence_buffer, file_name_no_ext=str(uuid.uuid4())
+                                )
+                                audio_info = {
+                                    "sentence": sentence_buffer,
+                                    "audio_filepath": audio_filepath,
+                                }
+                                task_queue.put(audio_info)
 
             except InterruptedError:
                 print("\nProducer interrupted")
