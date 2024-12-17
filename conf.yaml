@@ -27,7 +27,7 @@ ollama:
   ORGANIZATION_ID: "org_eternity"
   PROJECT_ID: "project_glass"
   ## LLM name
-  MODEL: "qwen2.5:72b"
+  MODEL: "qwen2.5:32b"
   # system prompt is at the very end of this file
   VERBOSE: False
 

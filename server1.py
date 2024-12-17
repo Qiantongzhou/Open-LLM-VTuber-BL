@@ -32,10 +32,10 @@ from live2d_model import Live2dModel
 from tts.stream_audio import AudioPayloadPreparer
 import __init__
 
-TEST_ROOM_IDS = [5624404]  # Replace with your desired Bilibili room IDs
+TEST_ROOM_IDS = [30015166]  # Replace with your desired Bilibili room IDs
 #tuzi 30015166
 #donggua 5624404
-SESSDATA = '08c12224%2C1749526310%2C8d778%2Ac2CjAtTPswAtRoKo_E8L5oIdnZ9Lwl_pYqei91QBA7Ezi2clNqC0AnptOZ4kNPXqL9ZvUSVnF1SGk0VkFUN2o5bG1rUTN1eHJrVjRjTGdDMnZGWUZERTZKMUVFRE44NjAtb1AtSnNySjlPVkJITUlRSWVpblh1WXdPMV8tZ1R5VE1BdHF1U1RRQ1ZRIIEC'
+SESSDATA = 'f720b3a4%2C1749954481%2Cd0e6b%2Ac2CjA_Vi_vivcoKfKfB8X6_vjvH7bGDdf7LL9EbW_eBuOtHbdrvXxQ078mfT-BWdZsvywSVkZJX1Y0S0N4dDJkX2dpT08tLWxQaHJHM05SamxqdHdibnVCa1pBTGhnVkQwcFBGSXo4YUhPSklENFVBLXJtRlRUSDNXZWZnSWhHNWplSnFBQlBNUGh3IIEC'
 
 class WebSocketServer:
     def __init__(self, open_llm_vtuber_main_config: Dict | None = None):
@@ -519,21 +519,24 @@ class ModelManager:
 # Constants
 GIFT_COOLDOWN_SECONDS = 20
 MAX_NORMAL_QUEUE_SIZE = 50  # If more than this, skip adding new normal messages
-IDLE_CHECK_INTERVAL = 0.1  # Check every 0.1s if we are idle
-MESSAGE_EXPIRY_SECONDS = 30  # Normal messages expire after 30s
-GIFT_MESSAGE_AGE_THRESHOLD = 30  # Gift messages older than 30s get a thank you appended
+IDLE_CHECK_INTERVAL = 0.1   # Check every 0.1s if we are idle
+
+# Adjust these as desired:
+SHORT_MESSAGE_EXPIRY_SECONDS = 40  # Expiry for short normal messages (≤10 chars)
+LONG_MESSAGE_EXPIRY_SECONDS = 120   # Expiry for long normal messages (>10 chars)
+GIFT_MESSAGE_AGE_THRESHOLD = 60    # Gift messages older than 60s get a thank you appended
+IDLE_THRESHOLD = 30                # Idle threshold in seconds
 
 class MyBiliHandler(blivedm.BaseHandler):
     def __init__(self, vtuber_instance):
         super().__init__()
         self.vtuber_instance = vtuber_instance
 
-        # Two queues: one for gift messages (high priority), one for normal messages
-        # Each entry is now: (timestamp, user_input_str, is_gift)
+        # Queues hold tuples: (timestamp, user_input_str, is_gift)
         self.gift_queue = asyncio.Queue()
         self.message_queue = asyncio.Queue()
 
-        # Track last gift times to prevent duplication in cooldown period
+        # Track last gift times
         self.last_gift_times: Dict[str, float] = {}
 
         # Track last processed message time
@@ -542,11 +545,12 @@ class MyBiliHandler(blivedm.BaseHandler):
         # Idle prompts
         self.idle_prompts = [
             "今天大家过的怎么样",
-            "好无聊",
+            "兔孜唱歌",
             "直播间人真少呢",
             "没有人理你",
             "没人回你话呢",
-            "多和你交流"
+            "多和你交流",
+            "这么无聊接着放歌吧"
         ]
 
         # Start the consumer task
@@ -554,9 +558,10 @@ class MyBiliHandler(blivedm.BaseHandler):
 
     async def _consumer_task(self):
         """
-        Continuously runs in the background, processing messages one by one.
-        Prioritizes gift_queue over message_queue.
-        If no messages for > 20 seconds, add a random idle prompt.
+        Continuously runs, processing messages in order:
+        1. If gift queue is not empty, process a gift message first.
+        2. Else if message queue is not empty, process a normal message.
+        3. If idle for > IDLE_THRESHOLD seconds, add an idle prompt.
         """
         while True:
             if not self.gift_queue.empty():
@@ -570,26 +575,35 @@ class MyBiliHandler(blivedm.BaseHandler):
                 self.message_queue.task_done()
                 self.last_processed_time = time.time()
             else:
-                # No messages in any queue, check if idle for >20s
-                res = 30
-                if time.time() - self.last_processed_time > res:
-                    # Attempt to add an idle prompt message
-                    await self._add_idle_message(res)
+                # No messages in any queue, check if idle
+                if time.time() - self.last_processed_time > IDLE_THRESHOLD:
+                    await self._add_idle_message(IDLE_THRESHOLD)
                     self.last_processed_time = time.time()
-                # Wait a bit before checking again
                 await asyncio.sleep(IDLE_CHECK_INTERVAL)
 
     async def _process_message(self, timestamp: float, user_input_str: str, is_gift: bool):
         """
         Process a single message from the queue.
-        - If normal and older than MESSAGE_EXPIRY_SECONDS, discard.
-        - If gift and older than GIFT_MESSAGE_AGE_THRESHOLD, append a thank you.
+
+        For normal messages:
+        - If length of the message ≤10 chars, expiry = SHORT_MESSAGE_EXPIRY_SECONDS
+        - If length of the message >10 chars, expiry = LONG_MESSAGE_EXPIRY_SECONDS
+        - Discard if too old.
+
+        For gift messages:
+        - If older than GIFT_MESSAGE_AGE_THRESHOLD, append a thank you.
         """
         age = time.time() - timestamp
+
         if not is_gift:
-            # Normal message: discard if too old
-            if age > MESSAGE_EXPIRY_SECONDS:
-                print(f"Discarding normal message due to age > {MESSAGE_EXPIRY_SECONDS}s: {user_input_str}")
+            # Determine expiry based on message length
+            # Strip might be used if you want to exclude formatting or whitespace
+            message_length = len(user_input_str)
+            expiry = LONG_MESSAGE_EXPIRY_SECONDS if message_length > 10 else SHORT_MESSAGE_EXPIRY_SECONDS
+
+            # Discard if too old
+            if age > expiry:
+                print(f"Discarding normal message due to age > {expiry}s: {user_input_str}")
                 return
         else:
             # Gift message: append thank you if too old
@@ -601,15 +615,14 @@ class MyBiliHandler(blivedm.BaseHandler):
 
     async def _handle_message(self, user_input_str: str):
         """
-        Handle one message by running the conversation_chain.
+        Run the conversation_chain with user_input_str.
         """
         response = await asyncio.to_thread(self.vtuber_instance.conversation_chain, user_input_str)
         print(f"Bilibili AI Response: {response}")
 
     def _should_skip_gift(self, uname: str) -> bool:
         """
-        Check if we should skip this gift based on last gift time.
-        If the user gifted less than GIFT_COOLDOWN_SECONDS ago, skip.
+        Skip gift if the user gifted less than GIFT_COOLDOWN_SECONDS ago.
         """
         now = time.time()
         last_time = self.last_gift_times.get(uname, 0)
@@ -620,28 +633,24 @@ class MyBiliHandler(blivedm.BaseHandler):
 
     async def _add_message_to_queue(self, user_input_str: str, is_gift: bool):
         """
-        Add a message to the appropriate queue with current timestamp.
-        Gift messages always go to gift_queue.
-        Normal messages go to message_queue if not full.
+        Add a message with timestamp to the appropriate queue.
         """
         timestamp = time.time()
         if is_gift:
             await self.gift_queue.put((timestamp, user_input_str, True))
         else:
-            # Check size of normal message queue before adding
             if self.message_queue.qsize() < MAX_NORMAL_QUEUE_SIZE:
                 await self.message_queue.put((timestamp, user_input_str, False))
             else:
-                # If queue is full, skip adding new normal messages
                 print("Message queue full, skipping non-gift message")
 
-    async def _add_idle_message(self, res):
+    async def _add_idle_message(self, threshold):
         """
-        Add a random idle prompt message to the normal message queue, if not full.
+        Add a random idle prompt if the queue is not full.
         """
         if self.message_queue.qsize() < MAX_NORMAL_QUEUE_SIZE:
             idle_message = random.choice(self.idle_prompts)
-            print(f"No messages for >{res}s, adding idle prompt: {idle_message}")
+            print(f"No messages for >{threshold}s, adding idle prompt: {idle_message}")
             timestamp = time.time()
             await self.message_queue.put((timestamp, idle_message, False))
         else:
@@ -652,16 +661,13 @@ class MyBiliHandler(blivedm.BaseHandler):
 
     def _on_danmaku(self, client: blivedm.BLiveClient, message: web_models.DanmakuMessage):
         print(f'[{client.room_id}] {message.uname}: {message.msg}')
-        # Normal chat message, add to normal queue
         asyncio.create_task(self._add_message_to_queue(f'{message.uname}: {message.msg}', False))
 
     def _on_gift(self, client: blivedm.BLiveClient, message: web_models.GiftMessage):
         print(f'[{client.room_id}] {message.uname} 赠送 {message.gift_name}x{message.num}')
-        # Gift message. Check if we should skip due to cooldown
         if self._should_skip_gift(message.uname):
             print(f"Skipping gift from {message.uname} due to cooldown.")
             return
-        # Otherwise, gift goes to top priority queue
         asyncio.create_task(self._add_message_to_queue(
             f'{message.uname} 赠送 {message.gift_name}x{message.num} [真的礼物]',
             True
@@ -669,7 +675,6 @@ class MyBiliHandler(blivedm.BaseHandler):
 
     def _on_buy_guard(self, client: blivedm.BLiveClient, message: web_models.GuardBuyMessage):
         print(f'[{client.room_id}] {message.username} 购买 {message.gift_name}')
-        # Buying guard also considered a gift message (or special event)
         if self._should_skip_gift(message.username):
             print(f"Skipping guard buy from {message.username} due to cooldown.")
             return
@@ -680,7 +685,6 @@ class MyBiliHandler(blivedm.BaseHandler):
 
     def _on_super_chat(self, client: blivedm.BLiveClient, message: web_models.SuperChatMessage):
         print(f'[{client.room_id}] 醒目留言 ¥{message.price} {message.uname}: {message.message}')
-        # Super chat is also considered a gift-like message (special message)
         if self._should_skip_gift(message.uname):
             print(f"Skipping super chat from {message.uname} due to cooldown.")
             return

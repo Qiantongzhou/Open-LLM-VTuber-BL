@@ -1,4 +1,5 @@
 import http
+import json
 import os
 import sys
 import re
@@ -20,6 +21,7 @@ import blivedm
 import blivedm.models.web as web_models
 
 import __init__
+from aifunctions.playsongfunction import playsongfunction
 from asr.asr_factory import ASRFactory
 from asr.asr_interface import ASRInterface
 from live2d_model import Live2dModel
@@ -33,7 +35,7 @@ from translate.translate_factory import TranslateFactory
 from utils.audio_preprocessor import audio_filter
 
 TEST_ROOM_IDS = [5624404]  # Change this to the room you want to monitor
-SESSDATA = '08c12224%2C1749526310%2C8d778%2Ac2CjAtTPswAtRoKo_E8L5oIdnZ9Lwl_pYqei91QBA7Ezi2clNqC0AnptOZ4kNPXqL9ZvUSVnF1SGk0VkFUN2o5bG1rUTN1eHJrVjRjTGdDMnZGWUZERTZKMUVFRE44NjAtb1AtSnNySjlPVkJITUlRSWVpblh1WXdPMV8tZ1R5VE1BdHF1U1RRQ1ZRIIEC'
+SESSDATA = 'f720b3a4%2C1749954481%2Cd0e6b%2Ac2CjA_Vi_vivcoKfKfB8X6_vjvH7bGDdf7LL9EbW_eBuOtHbdrvXxQ078mfT-BWdZsvywSVkZJX1Y0S0N4dDJkX2dpT08tLWxQaHJHM05SamxqdHdibnVCa1pBTGhnVkQwcFBGSXo4YUhPSklENFVBLXJtRlRUSDNXZWZnSWhHNWplSnFBQlBNUGh3IIEC'
 
 class OpenLLMVTuberMain:
     """
@@ -59,7 +61,7 @@ class OpenLLMVTuberMain:
         self._continue_exec_flag.set()  # Set the flag to continue execution
         self.session_id: str = str(uuid.uuid4().hex)
         self.heard_sentence: str = ""
-
+        self.songFunc=playsongfunction()
         # Init ASR if voice input is on.
         self.asr: ASRInterface | None
         if self.config.get("VOICE_INPUT_ON", False):
@@ -260,11 +262,12 @@ class OpenLLMVTuberMain:
         if not self.tts:
             return None
 
-
-
+        print("json_str")
         sentence = sentence.strip()
         if sentence == "":
             return None
+            # Check if the sentence is a JSON containing an action
+
 
         # Now generate audio with the extracted emotion if any
         return self.tts.generate_audio(sentence, file_name_no_ext=file_name_no_ext, emotion=emotion)
@@ -309,6 +312,8 @@ class OpenLLMVTuberMain:
                         sentence_buffer += char
                         full_response[0] += char
                         if self.is_complete_sentence(sentence_buffer):
+                            print("sentence")
+                            audio_filepath=None
                             # Extract emotion from the sentence if present
                             # Assuming emotion is indicated like [happy], [sad], [angry], etc.
                             emotion_pattern = r"\[([a-zA-Z0-9_]+)\]"
@@ -320,6 +325,20 @@ class OpenLLMVTuberMain:
                                 emotion = matches[0]
                                 # Remove all emotion tags from the sentence
                                 sentence_buffer = re.sub(emotion_pattern, "", sentence_buffer)
+
+                            json_pattern = r'(\{.*?\})'
+                            match = re.search(json_pattern, sentence_buffer)
+                            action = None
+                            if match:
+                                json_str = match.group(1)
+                                print("json_str1")
+                                sentence_buffer=sentence_buffer.replace(match.group(1), "").strip()
+                                try:
+                                    data = json.loads(json_str)
+                                    action = data.get("action", None)
+                                except json.JSONDecodeError:
+                                    pass
+
 
                             if self.verbose:
                                 print("\n")
@@ -338,10 +357,22 @@ class OpenLLMVTuberMain:
                                     "REMOVE_SPECIAL_CHAR", True
                                 ),
                             )
+                            if action == "play_song":
+                                # Remove the JSON part from the sentence to "clean it up"
+                                # For example, just strip out the matched JSON substring
 
-                            audio_filepath = self._generate_audio_file(
-                                tts_target_sentence, file_name_no_ext=str(uuid.uuid4()),emotion=emotion
-                            )
+                                # You might do something with cleaned_sentence if needed,
+                                # e.g. read it out first, or ignore it.
+                                # For now, we assume we just go to play a random song.
+                                print("playsong")
+                                audio_filepath = self.songFunc._get_song_audio_file_path(None)
+                                if self.verbose:
+                                    print(f"Action detected: play_song. Returning song file {audio_filepath}")
+                            else:
+
+                                audio_filepath = self._generate_audio_file(
+                                    tts_target_sentence, file_name_no_ext=str(uuid.uuid4()),emotion=emotion
+                                )
 
                             if not self._continue_exec_flag.is_set():
                                 raise InterruptedError("Producer interrupted")
@@ -485,6 +516,7 @@ class OpenLLMVTuberMain:
             "！",
             "……",
             "？",
+            "}"
         ]
         return any(text.strip().endswith(punct) for punct in punctuation_blacklist)
 

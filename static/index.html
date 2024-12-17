@@ -23,6 +23,8 @@
 </head>
 
 <body>
+<div id="snow"></div>
+<div id="background"></div>
     <div class="top-left">
         <button id="wsStatus">未连接</button>
         <button id="stateDisplay">状态：正在加载</button>
@@ -37,6 +39,9 @@
         </select>
         <select id="bgDropdown" aria-label="背景选择">
             <option value="">选择背景</option>
+        </select>
+        <select id="expressionSelect">
+         <option value="">Select Expression</option>
         </select>
     </div>
 
@@ -101,7 +106,7 @@
             if (savedBackground) {
                 setTimeout(() => {
                     bgDropdown.value = savedBackground;
-                    document.body.style.backgroundImage = `url('./bg/${savedBackground}')`;
+                    document.getElementById("background").style.backgroundImage = `url('./bg/${savedBackground}')`;
                 }, 1000);
             }
         });
@@ -254,6 +259,25 @@
                         console.log("音频播放被拦截。句子：", message.text);
                     } else {
                         addAudioTask(message.audio, message.volumes, message.slice_length, message.text, message.expressions);
+                        // if(message.expressions === "sadness") {
+                        //
+                        //  setExpressionWithTimeout("哭泣");
+                        // }else if(message.expressions === "smirk") {
+                        //
+                        //  setExpressionWithTimeout("脸红");
+                        // }else if(message.expressions === "anger") {
+                        //
+                        //  setExpressionWithTimeout("申请");
+                        // }else if(message.expressions === "joy") {
+                        //
+                        //  setExpressionWithTimeout("脸红");
+                        // }else if(message.expressions === "surprise") {
+                        //
+                        //  setExpressionWithTimeout("星星眼");
+                        // }
+
+
+
                     }
                     break;
                 case "set-model":
@@ -333,7 +357,7 @@
         bgDropdown.addEventListener('change', function () {
             const selectedBg = bgDropdown.value;
             if (selectedBg) {
-                document.body.style.backgroundImage = `url('./bg/${selectedBg}')`;
+                document.getElementById("background").style.backgroundImage = `url('./bg/${selectedBg}')`;
                 localStorage.setItem('selectedBackground', selectedBg);
             }
         });
@@ -389,6 +413,7 @@
             }
 
             const displayExpression = expression_list ? expression_list[0] : null;
+            print(displayExpression)
             console.log("开始播放音频：", text);
 
             try {
