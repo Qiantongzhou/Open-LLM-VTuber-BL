@@ -39,8 +39,8 @@ class TTSEngine(TTSInterface):
             "smirk": [
                 {"ref_audio_path": "output/hand_opt/11111录zhiTutu.mp3_0011217600_0011307840.wav",
                  "prompt_text": "谢谢三小星宝宝的粉丝灯牌。"},
-                {"ref_audio_path": "output/hand_opt/11111录zhiTutu.mp3_0008003840_0008140480.wav",
-                 "prompt_text": "这个好可爱，欢迎这个日文老师不认识字。"}
+                 {"ref_audio_path": "output/hand_opt/11111录zhiTutu.mp3_0008003840_0008140480.wav",
+                  "prompt_text": "这个好可爱，欢迎这个日文老师不认识字。"}
             ],
             "sadness": [
                 {"ref_audio_path": "output/hand_opt/11111录zhiTutu.mp3_0115203840_0115325120.wav", "prompt_text": "妈呀，我今天一看，今天掉十一个船啊，救命啊。"},

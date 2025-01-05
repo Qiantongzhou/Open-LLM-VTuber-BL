@@ -252,29 +252,30 @@
                     setExpression(message.text);
                     break;
                 case "mouth":
-                    setMouth(Number(message.text));
+                    //setMouth(Number(message.text));
                     break;
                 case "audio":
                     if (state == "interrupted") {
                         console.log("音频播放被拦截。句子：", message.text);
                     } else {
                         addAudioTask(message.audio, message.volumes, message.slice_length, message.text, message.expressions);
-                        // if(message.expressions === "sadness") {
-                        //
-                        //  setExpressionWithTimeout("哭泣");
-                        // }else if(message.expressions === "smirk") {
-                        //
-                        //  setExpressionWithTimeout("脸红");
-                        // }else if(message.expressions === "anger") {
-                        //
-                        //  setExpressionWithTimeout("申请");
-                        // }else if(message.expressions === "joy") {
-                        //
-                        //  setExpressionWithTimeout("脸红");
-                        // }else if(message.expressions === "surprise") {
-                        //
-                        //  setExpressionWithTimeout("星星眼");
-                        // }
+                        console.log(message.expressions)
+                        if(message.expressions === "sadness") {
+
+                         setExpressionWithTimeout("哭泣");
+                        }else if(message.expressions === "smirk") {
+
+                         setExpressionWithTimeout("脸红");
+                        }else if(message.expressions === "anger") {
+
+                         setExpressionWithTimeout("申请");
+                        }else if(message.expressions === "joy") {
+
+                         setExpressionWithTimeout("脸红");
+                        }else if(message.expressions === "surprise") {
+
+                         setExpressionWithTimeout("星星眼");
+                        }
 
 
 
@@ -413,7 +414,7 @@
             }
 
             const displayExpression = expression_list ? expression_list[0] : null;
-            print(displayExpression)
+            //print(displayExpression)
             console.log("开始播放音频：", text);
 
             try {

@@ -107,6 +107,7 @@ class LLM(LLMInterface):
                 messages=self.memory,
                 model=self.model,
                 stream=True,
+                extra_query={"keep_alive": "20m"},
             )
         except Exception as e:
             print("Error calling the chat endpoint: " + str(e))

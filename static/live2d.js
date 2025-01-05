@@ -83,15 +83,7 @@ const live2dModule = (function () {
     model2.x = app.view.width / 2 - model2.width / 2 + modelInfo["initialXshift"];
     model2.y = app.view.height / 2 - model2.height / 2 + modelInfo["initialYshift"];
 
-    // model2.on("hit", (hitAreas) => {
-    //   if (hitAreas.includes("body")) {
-    //     model2.motion("tap_body");
-    //   }
 
-    //   if (hitAreas.includes("head")) {
-    //     model2.expression();
-    //   }
-    // });
   app.ticker.add(() => {
     if (!pointerInteractionEnabled) {
       currentX += (targetX - currentX) * lerpSpeed;

@@ -20,7 +20,7 @@ class playsongfunction:
 
         if not self.all_songs:
             raise ValueError(f"No .wav files found in {self.path_to_songs}")
-        print(f"debug SongList size: {self.all_songs.count}")
+        print(f"debug SongList size: {len(self.all_songs)}")
         self.remaining_songs = []
         self.verbose = verbose
 
